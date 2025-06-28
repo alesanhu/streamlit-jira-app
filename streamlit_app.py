@@ -159,7 +159,7 @@ except Exception as e:
         issues = fetch_tickets(jira, jql)
     if not issues:
         st.warning("No hay tickets para los filtros seleccionados.")
-        return
+    return
 
     # -- DataFrame ----------------------------------------------------------
     df = pd.json_normalize([i.raw for i in issues])
