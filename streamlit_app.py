@@ -114,38 +114,57 @@ def main():
     if not jira:
         return
 
-    # -- Filtros ------------------------------------------------------------
+       # -- Filtros ------------------------------------------------------------
     st.sidebar.header("🔍 Filtros")
-    projects = []
-try:
-    projects = [p.key for p in jira.projects() if not p.raw.get('archived', False)]
-except Exception as e:
-    st.sidebar.error(f"No se pudieron cargar proyectos: {e}")
+    # Proyectos
+    try:
+        projects = [p.key for p in jira.projects() if not p.raw.get('archived', False)]
+    except Exception as e:
+        st.sidebar.error(f"No se pudieron cargar proyectos: {e}")
+        projects = []
 
+    sel_proj = st.sidebar.multiselect(
+        "Proyectos",
+        options=projects,
+        default=projects,
+        key="proj_filter"
+    )
 
+    # Estados
+    try:
+        statuses = [s.name.strip() for s in jira.statuses()]
+    except Exception as e:
+        st.sidebar.error(f"No se pudieron cargar estados: {e}")
+        statuses = []
 
+    sel_status = st.sidebar.multiselect(
+        "Estados",
+        options=statuses,
+        default=statuses,
+        key="status_filter"
+    )
 
-    sel_proj = st.sidebar.multiselect("Proyectos", options=projects, default=projects, key="proj_filter")
+    # Prioridades
+    try:
+        priorities = [p.name.strip() for p in jira.priorities()]
+    except Exception as e:
+        st.sidebar.error(f"No se pudieron cargar prioridades: {e}")
+        priorities = []
 
-    statuses = []
-try:
-    statuses = [s.name.strip() for s in jira.statuses()]
-except Exception as e:
-    st.sidebar.error(f"No se pudieron cargar estados: {e}")
-    sel_status = st.sidebar.multiselect("Estados", options=statuses, default=statuses, key="status_filter")
+    sel_pri = st.sidebar.multiselect(
+        "Prioridades",
+        options=priorities,
+        default=priorities,
+        key="pri_filter"
+    )
 
-    priorities = []
-try:
-    priorities = [p.name.strip() for p in jira.priorities()]
-except Exception as e:
-    st.sidebar.error(f"No se pudieron cargar prioridades: {e}")
-
-    sel_pri = st.sidebar.multiselect("Prioridades", options=priorities, default=priorities, key="pri_filter")
-
+    # Rango de fechas
     today = datetime.utcnow().date()
     default_start = today - pd.Timedelta(days=30)
     start_date, end_date = st.sidebar.date_input(
-        "Rango fechas creación", value=(default_start, today), key="date_filter"
+        "Rango fechas creación",
+        value=(default_start, today),
+        key="date_filter"
     )
 
     # -- JQL y carga --------------------------------------------------------
@@ -157,9 +176,11 @@ except Exception as e:
 
     with st.spinner("Cargando tickets..."):
         issues = fetch_tickets(jira, jql)
+
     if not issues:
         st.warning("No hay tickets para los filtros seleccionados.")
         return
+
 
     # -- DataFrame ----------------------------------------------------------
     df = pd.json_normalize([i.raw for i in issues])
