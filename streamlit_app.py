@@ -117,18 +117,21 @@ def main():
     # -- Filtros ------------------------------------------------------------
     st.sidebar.header("🔍 Filtros")
     projects = []
-    try:
-        projects = [p.key for p in jira.projects() if not p.raw.get('archived', False)]
-    except Exception:
-        st.sidebar.error("No se pudieron cargar proyectos.")
+try:
+    projects = [p.key for p in jira.projects() if not p.raw.get('archived', False)]
+except Exception as e:
+    st.sidebar.error(f"No se pudieron cargar proyectos: {e}")
+
+
+
 
     sel_proj = st.sidebar.multiselect("Proyectos", options=projects, default=projects, key="proj_filter")
 
-    statuses = []
-    try:
-        statuses = [s.name.strip() for s in jira.statuses()]
-    except Exception:
-        st.sidebar.error("No se pudieron cargar estados.")
+   statuses = []
+try:
+    statuses = [s.name.strip() for s in jira.statuses()]
+except Exception as e:
+    st.sidebar.error(f"No se pudieron cargar estados: {e}")
     sel_status = st.sidebar.multiselect("Estados", options=statuses, default=statuses, key="status_filter")
 
     priorities = []
