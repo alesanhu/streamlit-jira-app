@@ -1,16 +1,14 @@
-
-!.streamlit/secrets.toml
-
-
-.streamlit/config.toml
-
-
+.streamlit/secrets.toml
 
 
 __pycache__/
 *.py[cod]
 *$py.class
+
+
 .env
 .venv
+
+
 audio/
 
