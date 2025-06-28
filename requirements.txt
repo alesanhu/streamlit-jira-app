@@ -3,3 +3,4 @@ pandas
 altair
 jira
 openai
+xlsxwriter==3.2.0
