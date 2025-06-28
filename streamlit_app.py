@@ -132,10 +132,11 @@ def main():
     sel_status = st.sidebar.multiselect("Estados", options=statuses, default=statuses, key="status_filter")
 
     priorities = []
-    try:
-        priorities = [p.name.strip() for p in jira.priorities()]
-    except Exception:
-        st.sidebar.error("No se pudieron cargar prioridades.")
+try:
+    priorities = [p.name.strip() for p in jira.priorities()]
+except Exception as e:
+    st.sidebar.error(f"No se pudieron cargar prioridades: {e}")
+
     sel_pri = st.sidebar.multiselect("Prioridades", options=priorities, default=priorities, key="pri_filter")
 
     today = datetime.utcnow().date()
