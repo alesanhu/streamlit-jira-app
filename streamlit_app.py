@@ -115,7 +115,7 @@ def main():
     projects   = [p.key for p in jira.projects() if not p.raw.get('archived', False)]
     sel_proj   = st.sidebar.multiselect("Proyectos", options=projects, default=projects, key="proj_filter")
     statuses   = [s.name.strip() for s in jira.statuses()]
-    sel_status = st.sidebarmultiselect("Estados", options=statuses, default=statuses, key="status_filter")
+    sel_status = st.sidebar.multiselect("Estados", options=statuses, default=statuses, key="status_filter")
     priorities = [p.name.strip() for p in jira.priorities()]
     sel_pri    = st.sidebar.multiselect("Prioridades", options=priorities, default=priorities, key="pri_filter")
 
