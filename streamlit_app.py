@@ -112,12 +112,27 @@ def main():
 
     # -- Filtros ------------------------------------------------------------
     st.sidebar.header("🔍 Filtros")
-    projects   = [p.key for p in jira.projects() if not p.raw.get('archived', False)]
-    sel_proj   = st.sidebar.multiselect("Proyectos", options=projects, default=projects, key="proj_filter")
-    statuses   = [s.name.strip() for s in jira.statuses()]
+    projects = []
+    try:
+        projects = [p.key for p in jira.projects() if not p.raw.get('archived', False)]
+    except Exception:
+        st.sidebar.error("No se pudieron cargar proyectos.")
+
+    sel_proj = st.sidebar.multiselect("Proyectos", options=projects, default=projects, key="proj_filter")
+
+    statuses = []
+    try:
+        statuses = [s.name.strip() for s in jira.statuses()]
+    except Exception:
+        st.sidebar.error("No se pudieron cargar estados.")
     sel_status = st.sidebar.multiselect("Estados", options=statuses, default=statuses, key="status_filter")
-    priorities = [p.name.strip() for p in jira.priorities()]
-    sel_pri    = st.sidebar.multiselect("Prioridades", options=priorities, default=priorities, key="pri_filter")
+
+    priorities = []
+    try:
+        priorities = [p.name.strip() for p in jira.priorities()]
+    except Exception:
+        st.sidebar.error("No se pudieron cargar prioridades.")
+    sel_pri = st.sidebar.multiselect("Prioridades", options=priorities, default=priorities, key="pri_filter")
 
     today = datetime.utcnow().date()
     default_start = today - pd.Timedelta(days=30)
