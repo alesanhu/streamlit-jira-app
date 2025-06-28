@@ -1,11 +1,17 @@
 
 .streamlit/
 
+
+.streamlit/secrets.toml
+
+
 __pycache__/
 *.py[cod]
 *$py.class
 
+# Environments
 .env
 .venv
+
 
 audio/
