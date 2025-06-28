@@ -127,7 +127,7 @@ except Exception as e:
 
     sel_proj = st.sidebar.multiselect("Proyectos", options=projects, default=projects, key="proj_filter")
 
-   statuses = []
+    statuses = []
 try:
     statuses = [s.name.strip() for s in jira.statuses()]
 except Exception as e:
