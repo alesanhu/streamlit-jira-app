@@ -1,272 +1,208 @@
-import os
-from io import BytesIO
-from datetime import datetime
+"""
+Streamlit – Jira Dashboard con resumen automático
+------------------------------------------------
+• Lee issues de Jira usando la librería `jira`.
+• Muestra KPIs, gráficos y tablas.
+• Genera un resumen/alertas de las descripciones + comentarios.
+  - Usa OpenAI GPT si `OPENAI_API_KEY` está definido.
+  - Si no hay clave, cae a un modelo local (BART) vía 🤗 Transformers.
 
-import pandas as pd
+✱ Dependencias clave (añádelas a `requirements.txt`):
+  jira, pandas, streamlit, altair, openai, xlsxwriter, transformers, torch, sentencepiece
+"""
+
+from __future__ import annotations
+
+import os
+import textwrap
+from datetime import datetime
+from io import BytesIO
+
 import altair as alt
+import pandas as pd
 import streamlit as st
 from jira import JIRA
-from openai import OpenAI  # Cliente OpenAI actualizado
 
-# --- Helpers --------------------------------------------------------------
-server = st.secrets.get("JIRA_SERVER")
-user   = st.secrets.get("JIRA_USER")
-token  = st.secrets.get("JIRA_TOKEN")
-st.sidebar.write("DEBUG: servidor=", server, "usuario=", user)
+# ▒▒▒ SUMMARIZACIÓN  ▒▒▒ ---------------------------------------------------
+try:
+    from openai import OpenAI  # SDK ≥1.0
+except ImportError:  # openai no instalado
+    OpenAI = None  # type: ignore
 
-@st.cache_resource
-def create_jira_client(server: str, user: str, token: str):
-    """Crea un cliente JIRA"""
+try:
+    # Se carga on‑demand si se necesita el modelo local
+    from transformers import pipeline  # type: ignore
+except ImportError:
+    pipeline = None  # type: ignore
+
+
+# ░▒░ Funciones auxiliares ░▒░ ------------------------------------------------
+
+def quote_list(vals: list[str]) -> str:
+    """Escapa valores para JQL («'ISIL','PUCP'»)."""
+    escaped = [v.replace("'", "\\'") for v in vals]
+    return ",".join(f"'{v}'" for v in escaped)
+
+
+@st.cache_resource(show_spinner=False)
+def create_jira_client() -> JIRA | None:
+    server = st.secrets.get("JIRA_SERVER")
+    user = st.secrets.get("JIRA_USER")
+    token = st.secrets.get("JIRA_TOKEN")
+    if not (server and user and token):
+        st.sidebar.error("Faltan credenciales Jira en Secrets.")
+        return None
     try:
         return JIRA(server=server, basic_auth=(user, token))
     except Exception as e:
-        st.error(f"Error conexión Jira: {e}")
+        st.sidebar.error(f"Error conexión Jira: {e}")
         return None
 
-@st.cache_data
-def fetch_tickets(_jira, jql: str):
-    """Recupera issues desde JIRA usando JQL"""
+
+@st.cache_data(show_spinner=False)
+def fetch_issues(jira: JIRA, jql: str):
+    """Descarga hasta 2000 issues que cumplan el JQL."""
     try:
-        return _jira.search_issues(jql, maxResults=2000)
+        return jira.search_issues(jql, maxResults=2000, expand="comments")
     except Exception as e:
         st.error(f"Error fetching tickets: {e}")
         return []
 
 
-def quote_list(vals: list) -> str:
-    """Escapa y cita valores para usar en JQL"""
-    escaped = [v.replace("'", "\\'") for v in vals]
-    return ",".join(f"'{v}'" for v in escaped)
-
-
-def show_metrics(df: pd.DataFrame, resolved_df: pd.DataFrame):
-    """Muestra los indicadores clave de rendimiento"""
-    now = pd.Timestamp.now()
-    total = len(df)
-    resolved_count = len(resolved_df)
-    avg_res = resolved_df['resolve_days'].mean().round(1) if resolved_count else 0
-    avg_open_age = (
-        now - df.loc[df['resolved'].isna(), 'created']
-    ).dt.days.mean().round(1) if df['resolved'].isna().any() else 0
-    min_res = int(resolved_df['resolve_days'].min()) if resolved_count else 0
-    max_res = int(resolved_df['resolve_days'].max()) if resolved_count else 0
-    sla7 = (resolved_df['resolve_days'] <= 7).mean() * 100 if resolved_count else 0
-
-    cols = st.columns(5)
-    cols[0].metric("Total tickets", total)
-    cols[1].metric("Resueltos", resolved_count)
-    cols[2].metric("Promedio días resolución", avg_res)
-    cols[3].metric("Promedio días abiertos", avg_open_age)
-    cols[4].metric("% SLA ≤7d", f"{sla7:.1f}%")
-
-    c2 = st.columns(2)
-    c2[0].metric("Mín. días resolución", min_res)
-    c2[1].metric("Máx. días resolución", max_res)
-
-
-def summarize_tickets_text(df: pd.DataFrame) -> str:
-    """
-    Genera un resumen y puntos de alerta usando OpenAI GPT basados en descripción y comentarios.
-    Usa las credenciales definidas en st.secrets.
-    """
-    api_key = st.secrets.get("OPENAI_API_KEY")
-    if not api_key:
-        return "No se encontró OPENAI_API_KEY. Configure su clave en Secrets."
-
-    api = OpenAI(api_key=api_key)
-    texts = []
-    for desc in df.get('fields.description', []):
-        if pd.notna(desc):
-            texts.append(desc)
-    combined = ' \n---\n '.join(texts[:10]) or 'No hay descripciones disponibles.'
+def summarise_with_openai(text: str) -> str:
+    """Resumen vía OpenAI GPT."""
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
     prompt = (
-        "Eres un asistente que resume tickets de Jira. "
-        "El siguiente texto son las descripciones de tickets filtrados; "
-        "Proporciona un resumen breve y puntos de alerta clave:\n" + combined
+        "Eres un analista. Resume los puntos más importantes y cualquier alerta/impedimento "
+        "de los siguientes tickets de Jira.\n\n### Tickets\n" + text
     )
-    try:
-        resp = api.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role":"user","content":prompt}],
-            max_tokens=300,
-            temperature=0.5
-        )
-        return resp.choices[0].message.content.strip()
-    except Exception as e:
-        return f"Error al generar resumen: {e}"
+    resp = client.chat.completions.create(
+        model="gpt-3.5-turbo-0125",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=400,
+        temperature=0.4,
+    )
+    return resp.choices[0].message.content.strip()
 
-# --- App ------------------------------------------------------------------
+
+def summarise_with_bart(text: str) -> str:
+    """Resumen offline usando BART‑large‑cnn (Transformers)."""
+    if pipeline is None:
+        return "❌ transformers/torch no instalados: no se pudo usar el modelo local."
+    summarizer = pipeline("summarization", model="facebook/bart-large-cnn", device_map="auto")
+    chunks = textwrap.wrap(text, 3000)
+    outs = [summarizer(c, max_length=180, min_length=40, do_sample=False)[0]["summary_text"] for c in chunks]
+    return "\n".join(outs)
+
+
+# ░▒░ Interfaz Streamlit ░▒░ --------------------------------------------------
 
 def main():
-    st.set_page_config(page_title="Gestión de Tickets en Jira con Resumen GPT", layout="wide")
-    st.title("📊 Gestión de Tickets en Jira con Resumen GPT")
+    st.set_page_config(page_title="Jira Dashboard + Resumen", layout="wide")
+    st.title("📊 Gestión de Tickets en Jira + Resumen AI")
 
-    # -- Conexión Jira ------------------------------------------------------
-    st.sidebar.header("🔐 Conexión Jira")
-    server = st.secrets.get("JIRA_SERVER")
-    user   = st.secrets.get("JIRA_USER")
-    token  = st.secrets.get("JIRA_TOKEN")
-    if not (server and user and token):
-        st.sidebar.warning("Configure JIRA_SERVER, JIRA_USER y JIRA_TOKEN en Secrets.")
-        return
+    jira = create_jira_client()
+    if jira is None:
+        st.stop()
 
-    jira = create_jira_client(server, user, token)
-    if not jira:
-        return
-
-       # -- Filtros ------------------------------------------------------------
+    # ─── Filtros laterales ────────────────────────────────────────────────
     st.sidebar.header("🔍 Filtros")
-    # Proyectos
+
     try:
-        projects = [p.key for p in jira.projects() if not p.raw.get('archived', False)]
-    except Exception as e:
-        st.sidebar.error(f"No se pudieron cargar proyectos: {e}")
+        projects = [p.key for p in jira.projects() if not p.raw.get("archived", False)]
+    except Exception:
         projects = []
+    sel_proj = st.sidebar.multiselect("Proyectos", projects, projects)
 
-    sel_proj = st.sidebar.multiselect(
-        "Proyectos",
-        options=projects,
-        default=projects,
-        key="proj_filter"
-    )
-
-    # Estados
     try:
-        statuses = [s.name.strip() for s in jira.statuses()]
-    except Exception as e:
-        st.sidebar.error(f"No se pudieron cargar estados: {e}")
+        statuses = [s.name for s in jira.statuses()]
+    except Exception:
         statuses = []
+    sel_status = st.sidebar.multiselect("Estados", statuses, statuses)
 
-    sel_status = st.sidebar.multiselect(
-        "Estados",
-        options=statuses,
-        default=statuses,
-        key="status_filter"
-    )
-
-    # Prioridades
     try:
-        priorities = [p.name.strip() for p in jira.priorities()]
+        priorities = [p.name for p in jira.priorities()]
     except Exception as e:
-        st.sidebar.error(f"No se pudieron cargar prioridades: {e}")
         priorities = []
+        st.sidebar.warning("No se pudieron cargar prioridades (¿credenciales/API Token?).")
+    sel_priority = st.sidebar.multiselect("Prioridades", priorities, priorities)
 
-    sel_pri = st.sidebar.multiselect(
-        "Prioridades",
-        options=priorities,
-        default=priorities,
-        key="pri_filter"
-    )
-
-    # Rango de fechas
     today = datetime.utcnow().date()
-    default_start = today - pd.Timedelta(days=30)
-    start_date, end_date = st.sidebar.date_input(
-        "Rango fechas creación",
-        value=(default_start, today),
-        key="date_filter"
-    )
+    start, end = st.sidebar.date_input("Rango fechas creación", (today - pd.Timedelta(days=30), today))
 
-    # -- JQL y carga --------------------------------------------------------
+    # ─── Construir JQL ────────────────────────────────────────────────────
     jql_parts = []
     if sel_proj:
         jql_parts.append(f"project in ({quote_list(sel_proj)})")
-    jql_parts.append(f"created >= '{start_date}' AND created <= '{end_date}'")
+    jql_parts.append(f"created >= '{start}' AND created <= '{end}'")
     jql = " AND ".join(jql_parts) + " ORDER BY created DESC"
 
-    with st.spinner("Cargando tickets..."):
-        issues = fetch_tickets(jira, jql)
+    with st.spinner("Cargando tickets de Jira…"):
+        issues = fetch_issues(jira, jql)
 
     if not issues:
-        st.warning("No hay tickets para los filtros seleccionados.")
-        return
+        st.warning("No hay tickets para los filtros elegidos.")
+        st.stop()
 
+    # ─── DataFrame ───────────────────────────────────────────────────────
+    raw = [i.raw for i in issues]
+    df = pd.json_normalize(raw)
+    df["key"] = [i.key for i in issues]
+    df["summary"] = [i.fields.summary for i in issues]
+    df["assignee"] = df["fields.assignee.displayName"].fillna("Sin asignar")
+    df["reporter"] = df["fields.reporter.displayName"].fillna("Sin asignar")
+    df["status"] = df["fields.status.name"]
+    df["priority"] = df["fields.priority.name"].fillna("None")
+    df["created"] = pd.to_datetime(df["fields.created"], utc=True).dt.tz_localize(None)
 
-    # -- DataFrame ----------------------------------------------------------
-    df = pd.json_normalize([i.raw for i in issues])
-    df['assignee']     = df['fields.assignee.displayName'].fillna('Sin asignar')
-    df['reporter']     = df['fields.reporter.displayName'].fillna('Sin asignar')
-    df['status']       = df['fields.status.name']
-    df['priority']     = df['fields.priority.name'].fillna('None')
-    df['created']      = pd.to_datetime(df['fields.created'], utc=True).dt.tz_localize(None)
-    df['resolved']     = pd.to_datetime(df['fields.resolutiondate'], utc=True).dt.tz_localize(None)
-    df['area_destino'] = df.get('fields.customfield_10043.value', 'Sin Área')
+    # ─── Resumen (descripciones + primeros comentarios) ──────────────────
+    st.subheader("📝 Resumen AI")
+    combined_texts = []
+    for issue in issues:
+        body = [issue.fields.description or ""]
+        comments = [c.body for c in issue.fields.comment.comments[:3]]  # primeros 3 comentarios
+        combined_texts.append("\n".join(body + comments))
+    corpus = "\n\n---\n\n".join(combined_texts)[:16000]
 
-    # -- Filtros locales ----------------------------------------------------
-    df = df[df['status'].isin(sel_status)]
-    df = df[df['priority'].isin(sel_pri)]
+    if "OPENAI_API_KEY" in st.secrets and OpenAI is not None:
+        summary = summarise_with_openai(corpus)
+    else:
+        summary = summarise_with_bart(corpus)
+    st.text_area("Resumen generado", summary, height=200)
 
-    sel_assignee = st.sidebar.multiselect("Responsable", df['assignee'].unique(), df['assignee'].unique(), key="assignee_sel")
-    df = df[df['assignee'].isin(sel_assignee)]
-
-    sel_reporter = st.sidebar.multiselect("Reportero", df['reporter'].unique(), df['reporter'].unique(), key="reporter_sel")
-    df = df[df['reporter'].isin(sel_reporter)]
-
-    sel_area = st.sidebar.multiselect("Área Destino", df['area_destino'].unique(), df['area_destino'].unique(), key="area_sel")
-    df = df[df['area_destino'].isin(sel_area)]
-
-    # -- Métricas de tiempo --------------------------------------------------
+    # ─── KPIs ────────────────────────────────────────────────────────────
     now = pd.Timestamp.now()
-    df['age_days']       = (now - df['created']).dt.days
-    resolved_df          = df.dropna(subset=['resolved']).copy()
-    resolved_df['resolve_days'] = (resolved_df['resolved'] - resolved_df['created']).dt.days
+    df["age_days"] = (now - df["created"]).dt.days
+    resolved_df = df.dropna(subset=["fields.resolutiondate"]).copy()
+    resolved_df["resolve_days"] = (
+        pd.to_datetime(resolved_df["fields.resolutiondate"], utc=True).dt.tz_localize(None) - resolved_df["created"]
+    ).dt.days
 
-    # -- GPT Summary ---------------------------------------------------------
-    st.subheader("📝 Resumen de Tickets Generado por GPT")
-    summary = summarize_tickets_text(df)
-    st.text_area("Resumen y Alertas", value=summary, height=200)
+    def kpi(label: str, value):
+        st.metric(label, value)
 
-    # -- KPI tabla ----------------------------------------------------------
-    show_metrics(df, resolved_df)
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total", len(df))
+    col2.metric("Abiertos", df["fields.resolutiondate"].isna().sum())
+    col3.metric("Media días abiertos", round(df["age_days"].mean(), 1))
+    col4.metric("Media días resolución", round(resolved_df["resolve_days"].mean(), 1) if not resolved_df.empty else "‑")
 
-    # -- Gráficos ----------------------------------------------------------
-    st.subheader("📊 Tickets por Estado y Prioridad")
-    sc = df['status'].value_counts().reset_index(); sc.columns=['status','count']
-    pc = df['priority'].value_counts().reset_index(); pc.columns=['priority','count']
+    # ─── Gráficos  ────────────────────────────────────────────────────────
+    st.subheader("Distribución por Estado y Prioridad")
+    status_counts = df["status"].value_counts().reset_index().rename(columns={"index": "Status", "status": "Cantidad"})
+    pri_counts = df["priority"].value_counts().reset_index().rename(columns={"index": "Priority", "priority": "Cantidad"})
 
-    chart_status = alt.Chart(sc).mark_bar(size=40).encode(
-        x=alt.X('status:N', title='Estado', sort='-y'),
-        y=alt.Y('count:Q', title='Cantidad'),
-        tooltip=['status','count']
-    ).properties(width=600, height=400)
+    bar1 = alt.Chart(status_counts).mark_bar().encode(x="Status", y="Cantidad")
+    bar2 = alt.Chart(pri_counts).mark_bar().encode(x="Priority", y="Cantidad")
+    st.altair_chart(bar1 | bar2, use_container_width=True)
 
-    chart_pri = alt.Chart(pc).mark_bar(size=40).encode(
-        x=alt.X('priority:N', title='Prioridad', sort='-y'),
-        y=alt.Y('count:Q', title='Cantidad'),
-        tooltip=['priority','count']
-    ).properties(width=600, height=400)
-
-    combined = alt.hconcat(chart_status, chart_pri, spacing=60).resolve_scale(y='independent')
-    st.altair_chart(combined, use_container_width=True)
-
-    st.subheader("📈 Tendencia diaria (por día)")
-    trend = df.copy(); trend['fecha'] = trend['created'].dt.floor('D')
-    tc = trend.groupby('fecha').size().reset_index(name='count')
-    chart_trend = alt.Chart(tc).mark_line(point=True).encode(
-        x=alt.X('fecha:T', title='Fecha', axis=alt.Axis(format='%Y-%m-%d', tickCount='day')),
-        y=alt.Y('count:Q', title='Tickets creados'),
-        tooltip=[alt.Tooltip('fecha:T', title='Fecha'),'count']
-    ).properties(width=1200, height=400)
-    st.altair_chart(chart_trend, use_container_width=True)
-
-    # -- Tablas -------------------------------------------------------------
-    st.subheader("📋 Tickets por Responsable")
-    ta = df.groupby('assignee').size().reset_index(name='tickets')
-    st.dataframe(ta.sort_values('tickets', ascending=False), use_container_width=True)
-
-    st.subheader("🏷️ Top 3 Tickets con Mayor Tiempo por Estado")
-    tops = []
-    for stt in df['status'].unique():
-        tmp = df[df['status']==stt].copy()
-        tmp['url'] = tmp['key'].apply(lambda k: f"{server}/browse/{k}")
-        tops.append(tmp.nlargest(3, 'age_days')[['status','key','url','age_days']])
-    st.dataframe(pd.concat(tops), use_container_width=True)
-
-    # -- Export -------------------------------------------------------------
+    # ─── Exportar a Excel ────────────────────────────────────────────────
     buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-        df.to_excel(writer, sheet_name="Tickets", index=False)
-    st.download_button("⬇️ Exportar a Excel", buffer.getvalue(), file_name="tickets_jira.xlsx")
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        df.to_excel(writer, index=False, sheet_name="Tickets")
+    st.download_button("⬇️ Exportar a Excel", buffer.getvalue(), file_name="tickets.xlsx")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
+
