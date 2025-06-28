@@ -9,6 +9,10 @@ from jira import JIRA
 from openai import OpenAI  # Cliente OpenAI actualizado
 
 # --- Helpers --------------------------------------------------------------
+server = st.secrets.get("JIRA_SERVER")
+user   = st.secrets.get("JIRA_USER")
+token  = st.secrets.get("JIRA_TOKEN")
+st.sidebar.write("DEBUG: servidor=", server, "usuario=", user)
 
 @st.cache_resource
 def create_jira_client(server: str, user: str, token: str):
