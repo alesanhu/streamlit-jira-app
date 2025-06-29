@@ -7,5 +7,4 @@ openai
 nltk 
 transformers
 accelerate
-torch
-setencepiece
+sumy
