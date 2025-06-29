@@ -12,6 +12,7 @@ import os
 import textwrap
 from datetime import datetime
 from io import BytesIO
+from torch import accelerate 
 
 import altair as alt
 import pandas as pd
@@ -28,10 +29,7 @@ try:
     from transformers import pipeline                # modo offline
 except ImportError:
     pipeline = None                                  # type: ignore
-try:
-    from torch import accelerate               # modo offline
-except ImportError:
-    gut = None                                  # type: ignore
+
 
 
 # ═════ Helpers ════════════════════════════════════════════════════════════
