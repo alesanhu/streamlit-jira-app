@@ -4,6 +4,4 @@ altair
 jira
 xlsxwriter
 openai         
-transformers
 torch
-sentencepiece
