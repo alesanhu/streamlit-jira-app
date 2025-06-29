@@ -4,7 +4,6 @@ altair
 jira
 xlsxwriter
 openai         
-torch
+nltk 
 transformers
 accelerate
-setencepiece
