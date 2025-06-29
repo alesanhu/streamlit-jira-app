@@ -50,6 +50,7 @@ def fetch_issues(_jira: JIRA, jql: str):
 def local_summary(text: str, max_sentences: int = 5) -> str:
     """Resumen sencillo (frecuencia de palabras) usando solo NLTK."""
     import nltk, heapq
+    nltk.download('punkt_tab')
     nltk.download("punkt", quiet=True)
     nltk.download("stopwords", quiet=True)
     from nltk.tokenize import sent_tokenize, word_tokenize
