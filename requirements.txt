@@ -6,3 +6,4 @@ xlsxwriter
 openai         
 torch
 transformers
+accelerate
