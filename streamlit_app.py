@@ -1,54 +1,41 @@
 """
-Streamlit – Jira Dashboard con resumen automático
+Streamlit – Jira dashboard con resumen automático
 -------------------------------------------------
-• Lee issues de Jira (librería `jira`).
-• KPI, gráficos y tablas.
-• Resumen/alertas de `fields.description` + 3 primeros comentarios.
-  · Usa OpenAI GPT si `OPENAI_API_KEY` está en st.secrets.
-  · Si no hay clave, muestra un aviso (sin transformers locales).
+• Lee issues de Jira con `jira` (expande comentarios).
+• Filtros dinámicos: proyecto, fecha, estado, prioridad,
+  responsable, área-destino (customfield_10043).
+• Muestra KPIs, gráficos Altair y permite exportar a Excel.
+• Resume descripciones + primeros comentarios:
+  - Si hay OPENAI_API_KEY en `st.secrets` ➟ lo hace con GPT-3.5-turbo.
+  - Si no, muestra aviso de que no hay clave.
+Requisitos principales (requirements.txt):
+    jira
+    pandas
+    streamlit
+    altair
+    openai
+    xlsxwriter
 """
-
 from __future__ import annotations
 
-import os
 import textwrap
 from datetime import datetime
 from io import BytesIO
-from typing import List
 
 import altair as alt
 import pandas as pd
 import streamlit as st
 from jira import JIRA
 
-# ======== INTENTAR usar OpenAI si hay clave ===============================
-try:
-    from openai import OpenAI  # SDK ≥1.0
-except ImportError:  # openai no instalado
-    OpenAI = None  # type: ignore
-
-
-# ══════════════ Helpers ───────────────────────────────────────────────────
-
-
-def quote_list(vals: List[str]) -> str:
-    """
-    Devuelve `'A','B'…` escapando comillas simples internas.
-    """
-    escaped = [v.replace("'", "\\'") for v in vals]
-    return ",".join(f"'{e}'" for e in escaped)
-
-
+# ─────────────────────── Helpers ────────────────────────────────────────────
 @st.cache_resource(show_spinner=False)
 def create_jira_client() -> JIRA | None:
-    """
-    Conecta a Jira usando las credenciales guardadas en st.secrets.
-    """
+    """Devuelve un cliente JIRA usando credenciales guardadas en st.secrets."""
     server = st.secrets.get("JIRA_SERVER")
-    user = st.secrets.get("JIRA_USER")
-    token = st.secrets.get("JIRA_TOKEN")
+    user   = st.secrets.get("JIRA_USER")
+    token  = st.secrets.get("JIRA_TOKEN")
     if not (server and user and token):
-        st.sidebar.error("Faltan credenciales Jira en Secrets.")
+        st.sidebar.error("⚠️ Faltan JIRA_SERVER, JIRA_USER o JIRA_TOKEN en Secrets.")
         return None
     try:
         return JIRA(server=server, basic_auth=(user, token))
@@ -57,165 +44,152 @@ def create_jira_client() -> JIRA | None:
         return None
 
 
+def quote_list(vals: list[str]) -> str:
+    """Convierte ['ISIL','PUCP'] ➟  'ISIL','PUCP' escapando comillas simples."""
+    return ",".join(f"'{v.replace(\"'\", \"\\\\'\")}'" for v in vals)
+
+
 @st.cache_data(show_spinner=False)
-def fetch_issues(_jira: JIRA, jql: str):
-    """
-    Descarga hasta 2000 issues que cumplan el JQL.
-    (El parámetro va con guion bajo para que Streamlit no intente hashearlo)
-    """
+def fetch_issues(jira: JIRA, jql: str):
+    """Descarga hasta 2000 issues y expande comentarios."""
     try:
-        return _jira.search_issues(jql, maxResults=2000, expand="comments")
+        return jira.search_issues(jql, maxResults=2000, expand="comment")
     except Exception as e:
         st.error(f"Error fetching tickets: {e}")
         return []
 
 
-def summarise_with_openai(text: str) -> str:
-    """Resumen vía OpenAI GPT."""
-    if OpenAI is None:
-        return "❌ openai-python no está instalado."
+def summarize_tickets(text: str) -> str:
+    """Genera un resumen con OpenAI si hay clave; si no, devuelve aviso."""
     if "OPENAI_API_KEY" not in st.secrets:
-        return "🔑 No hay OPENAI_API_KEY en Secrets: sin resumen GPT."
+        return "🔑 No hay OPENAI_API_KEY en Secrets; no se generó resumen."
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+        prompt = (
+            "Eres analista de soporte. Resume los puntos clave y alertas de los "
+            "siguientes tickets de Jira:\n\n### Tickets\n" + text
+        )
+        rsp = client.chat.completions.create(
+            model="gpt-3.5-turbo-0125",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=400,
+            temperature=0.4,
+        )
+        return rsp.choices[0].message.content.strip()
+    except Exception as e:
+        return f"❌ Error OpenAI: {e}"
 
-    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-    prompt = (
-        "Eres un analista. Resume los puntos clave y alertas presentes en estos tickets de Jira:\n\n"
-        "### Tickets\n" + text
-    )
-    resp = client.chat.completions.create(
-        model="gpt-3.5-turbo-0125",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=400,
-        temperature=0.4,
-    )
-    return resp.choices[0].message.content.strip()
 
-
-# ══════════════ App ───────────────────────────────────────────────────────
-
-
-def main() -> None:
-    st.set_page_config(page_title="Jira Dashboard + Resumen AI", layout="wide")
-    st.title("📊 Gestión de Tickets en Jira + Resumen AI")
+# ─────────────────────── App principal ──────────────────────────────────────
+def main():
+    st.set_page_config("Jira Dashboard + AI Summary", layout="wide")
+    st.title("📊 Gestión de Tickets Jira + Resumen AI")
 
     jira = create_jira_client()
     if jira is None:
         st.stop()
 
-    # ----------------- Filtros laterales ----------------------------------
+    # ---------------------- Filtros laterales ------------------------------
     st.sidebar.header("🔍 Filtros")
 
     try:
-        projects = [p.key for p in jira.projects() if not p.raw.get("archived", False)]
+        all_projects = [p.key for p in jira.projects() if not p.raw.get("archived", False)]
     except Exception:
-        projects = []
-    sel_proj = st.sidebar.multiselect("Proyectos", projects, projects)
-
-    try:
-        statuses = [s.name for s in jira.statuses()]
-    except Exception:
-        statuses = []
-    sel_status = st.sidebar.multiselect("Estados", statuses, statuses)
-
-    try:
-        priorities = [p.name for p in jira.priorities()]
-    except Exception:
-        priorities = []
-        st.sidebar.warning("No se pudieron cargar Prioridades (¿token Jira correcto?).")
-    sel_priority = st.sidebar.multiselect("Prioridades", priorities, priorities)
+        all_projects = []
+    sel_proj = st.sidebar.multiselect("Proyecto(s)", all_projects, all_projects)
 
     today = datetime.utcnow().date()
-    start, end = st.sidebar.date_input(
-        "Rango fechas creación",
-        (today - pd.Timedelta(days=30), today),
+    start_date, end_date = st.sidebar.date_input(
+        "Rango creación", (today - pd.Timedelta(days=30), today)
     )
 
-    # ----------------- Construir JQL --------------------------------------
-    # ── JQL y carga (solo proyecto + fechas) ──────────────────────────────
+    # -- JQL solo con proyecto + fecha (los demás filtros se aplican local) --
     jql_parts = []
     if sel_proj:
-       jql_parts.append(f"project in ({quote_list(sel_proj)})")
-
-    # Rango de fechas
-    jql_parts.append(f"created >= '{start}' AND created <= '{end}'")
-
-    # 👇 NO añadimos ni status ni priority aquí
+        jql_parts.append(f"project in ({quote_list(sel_proj)})")
+    jql_parts.append(f"created >= '{start_date}' AND created <= '{end_date}'")
     jql = " AND ".join(jql_parts) + " ORDER BY created DESC"
 
     with st.spinner("Cargando tickets de Jira…"):
-      issues = fetch_issues(jira, jql)
-
+        issues = fetch_issues(jira, jql)
 
     if not issues:
-        st.warning("No hay tickets para los filtros elegidos.")
+        st.warning("No se obtuvieron tickets con los filtros actuales.")
         st.stop()
 
-    # ----------------- DataFrame base -------------------------------------
-    raw = [i.raw for i in issues]
-    df = pd.json_normalize(raw)
-    df["key"] = [i.key for i in issues]
-    df["summary"] = [i.fields.summary for i in issues]
-    df["assignee"] = df["fields.assignee.displayName"].fillna("Sin asignar")
-    df["reporter"] = df["fields.reporter.displayName"].fillna("Sin asignar")
-    df["Estado"] = df["fields.status.name"]
-    df["Prioridad"] = df["fields.priority.name"].fillna("None")
-    df["created"] = pd.to_datetime(df["fields.created"], utc=True).dt.tz_localize(None)
+    # -------------------- DataFrame base -----------------------------------
+    df = pd.json_normalize([i.raw for i in issues])
+    df["key"]        = [i.key for i in issues]
+    df["summary"]    = [i.fields.summary for i in issues]
+    df["assignee"]   = df["fields.assignee.displayName"].fillna("Sin asignar")
+    df["reporter"]   = df["fields.reporter.displayName"].fillna("Sin asignar")
+    df["status"]     = df["fields.status.name"]
+    df["priority"]   = df["fields.priority.name"].fillna("Sin prioridad")
+    df["created"]    = pd.to_datetime(df["fields.created"], utc=True).dt.tz_localize(None)
+    df["area_destino"] = df.get("fields.customfield_10043.value", "Sin Área")
 
-    # ----------------- Resumen AI -----------------------------------------
-    st.subheader("📝 Resumen / Alertas")
-    texts = []
+    # -------------------- Opciones dinámicas -------------------------------
+    statuses   = sorted(df["status"].dropna().unique())
+    priorities = sorted(df["priority"].dropna().unique())
+    assignees  = sorted(df["assignee"].dropna().unique())
+    areas      = sorted(df["area_destino"].dropna().unique())
+
+    sel_status = st.sidebar.multiselect("Estados", statuses, statuses)
+    sel_pri    = st.sidebar.multiselect("Prioridades", priorities, priorities)
+    sel_ass    = st.sidebar.multiselect("Responsable", assignees, assignees)
+    sel_area   = st.sidebar.multiselect("Área Destino", areas, areas)
+
+    # -------------------- Filtrado local -----------------------------------
+    df = df[
+        df["status"      ].isin(sel_status) &
+        df["priority"    ].isin(sel_pri)    &
+        df["assignee"    ].isin(sel_ass)    &
+        df["area_destino"].isin(sel_area)
+    ]
+
+    # -------------------- Resumen AI ---------------------------------------
+    st.subheader("📝 Resumen / alertas")
+    ticket_texts = []
     for issue in issues:
+        if issue.key not in df["key"].values:
+            continue  # ticket filtrado fuera
         body = issue.fields.description or ""
-        first_comments = "\n".join(c.body for c in issue.fields.comment.comments[:3])
-        texts.append(f"*{issue.key}* – {issue.fields.summary}\n{body}\n{first_comments}")
-    corpus = "\n\n---\n\n".join(texts)[:16000]  # límite de prompt
+        comments = [c.body for c in issue.fields.comment.comments[:3]]
+        ticket_texts.append(f"*{issue.key}* – {issue.fields.summary}\n" + body + "\n".join(comments))
+    corpus = "\n\n-----\n\n".join(ticket_texts)[:16000]  # límite de tokens
 
-    summary = summarise_with_openai(corpus)
+    summary = summarize_tickets(corpus)
     st.text_area("Resumen generado", summary, height=220)
 
-    # ----------------- KPIs ----------------------------------------------
+    # -------------------- KPIs --------------------------------------------
     now = pd.Timestamp.now()
     df["age_days"] = (now - df["created"]).dt.days
-    resolved_df = df.dropna(subset=["fields.resolutiondate"]).copy()
-    resolved_df["resolve_days"] = (
-        pd.to_datetime(resolved_df["fields.resolutiondate"], utc=True)
-        .dt.tz_localize(None)
-        - resolved_df["created"]
+    open_tickets = df[df["fields.resolutiondate"].isna()]
+    closed       = df[~df["fields.resolutiondate"].isna()]
+    closed["resolve_days"] = (
+        pd.to_datetime(closed["fields.resolutiondate"], utc=True).dt.tz_localize(None) - closed["created"]
     ).dt.days
 
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Total", len(df))
-    k2.metric("Abiertos", df["fields.resolutiondate"].isna().sum())
-    k3.metric("Media días abiertos", round(df["age_days"].mean(), 1))
-    k4.metric(
-        "Media días resolución",
-        round(resolved_df["resolve_days"].mean(), 1) if not resolved_df.empty else "-",
-    )
+    k2.metric("Abiertos", len(open_tickets))
+    k3.metric("Promedio días abiertos", round(open_tickets["age_days"].mean(), 1) if not open_tickets.empty else "-")
+    k4.metric("Promedio días resolución", round(closed["resolve_days"].mean(), 1) if not closed.empty else "-")
 
-    # ----------------- Gráficos -------------------------------------------
+    # -------------------- Gráficos ----------------------------------------
     st.subheader("Distribución por Estado y Prioridad")
+    state_counts = df["status"].value_counts().reset_index(names=["Estado", "Cantidad"])
+    pri_counts   = df["priority"].value_counts().reset_index(names=["Prioridad", "Cantidad"])
+    chart_state = alt.Chart(state_counts).mark_bar(size=40).encode(x="Estado:N", y="Cantidad:Q")
+    chart_pri   = alt.Chart(pri_counts  ).mark_bar(size=40).encode(x="Prioridad:N", y="Cantidad:Q")
+    st.altair_chart(chart_state | chart_pri, use_container_width=True)
 
-    status_counts = df["Estado"].value_counts().reset_index().rename(
-        columns={"index": "Estado", "Estado": "Cantidad"}
-    )
-    pri_counts = df["Prioridad"].value_counts().reset_index().rename(
-        columns={"index": "Prioridad", "Prioridad": "Cantidad"}
-    )
-
-    bar1 = alt.Chart(status_counts).mark_bar().encode(x="Estado:N", y="Cantidad:Q")
-    bar2 = alt.Chart(pri_counts).mark_bar().encode(x="Prioridad:N", y="Cantidad:Q")
-    st.altair_chart(bar1 | bar2, use_container_width=True)
-
-    # ----------------- Tabla responsable ----------------------------------
-    st.subheader("📋 Tickets por Responsable")
-    agg = df.groupby("assignee").size().reset_index(name="tickets").sort_values("tickets", ascending=False)
-    st.dataframe(agg, use_container_width=True)
-
-    # ----------------- Exportar -------------------------------------------
+    # -------------------- Exportar a Excel --------------------------------
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
         df.to_excel(writer, index=False, sheet_name="Tickets")
-    st.download_button("⬇️ Exportar a Excel", buffer.getvalue(), "tickets.xlsx")
+    st.download_button("⬇️ Exportar a Excel", buffer.getvalue(), file_name="tickets.xlsx", mime="application/vnd.ms-excel")
 
 
 if __name__ == "__main__":
