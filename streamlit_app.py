@@ -46,7 +46,9 @@ def fetch_issues(_jira: JIRA, jql: str):
     except Exception as e:
         st.error(f"Error fetching tickets: {e}")
         return []
-
+from gensim.summarization import summarize
+import nltk
+nltk.download("punkt", quiet=True)
 def local_summary(text: str, max_sentences: int = 5) -> str:
     """Resumen sencillo (frecuencia de palabras) usando solo NLTK."""
     import nltk, heapq
