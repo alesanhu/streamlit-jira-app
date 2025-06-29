@@ -2,5 +2,8 @@ streamlit
 pandas
 altair
 jira
-openai
-xlsxwriter==3.2.0
+xlsxwriter
+openai         
+transformers
+torch
+sentencepiece
