@@ -12,7 +12,7 @@ import os
 import textwrap
 from datetime import datetime
 from io import BytesIO
-from torch import accelerate 
+import accelerate 
 
 import altair as alt
 import pandas as pd
