@@ -143,7 +143,7 @@ def main() -> None:
     jql = " AND ".join(jql_parts) + " ORDER BY created DESC"
 
     with st.spinner("Cargando tickets de Jira…"):
-    issues = fetch_issues(jira, jql)
+      issues = fetch_issues(jira, jql)
 
 
     if not issues:
