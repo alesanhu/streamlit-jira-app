@@ -8,3 +8,4 @@ nltk
 transformers
 accelerate
 sumy
+gensim
