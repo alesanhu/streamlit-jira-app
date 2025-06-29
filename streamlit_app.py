@@ -59,14 +59,18 @@ def create_jira_client() -> JIRA | None:
         return None
 
 
+# 1⃣  función de descarga  – cambia el nombre del 1er parámetro
 @st.cache_data(show_spinner=False)
-def fetch_issues(jira: JIRA, jql: str):
-    """Descarga hasta 2000 issues que cumplan el JQL."""
+def fetch_issues(_jira, jql: str):      # <- _jira  (con “_” delante)
     try:
-        return jira.search_issues(jql, maxResults=2000, expand="comments")
+        return _jira.search_issues(jql, maxResults=2000)
     except Exception as e:
         st.error(f"Error fetching tickets: {e}")
         return []
+
+# 2⃣  la llamada dentro de main() – pásale el mismo cliente
+issues = fetch_issues(jira, jql)        # funciona igual
+
 
 
 def summarise_with_openai(text: str) -> str:
