@@ -5,3 +5,4 @@ jira
 xlsxwriter
 openai         
 torch
+transformers
