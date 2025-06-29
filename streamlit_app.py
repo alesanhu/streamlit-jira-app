@@ -131,21 +131,22 @@ def main() -> None:
     )
 
     # ----------------- Construir JQL --------------------------------------
-    jql_parts: list[str] = []
-    if sel_proj:
-        jql_parts.append(f"project in ({quote_list(sel_proj)})")
-    if sel_priority:
-        jql_parts.append(f"priority in ({quote_list(sel_priority)})")
-    if sel_status:
-        jql_parts.append(f"status in ({quote_list(sel_status)})")
-    jql_parts.append(f"created >= '{start}' AND created <= '{end}'")
+    # ── JQL y carga (solo proyecto + fechas) ──────────────────────────────
+jql_parts = []
+if sel_proj:
+    jql_parts.append(f"project in ({quote_list(sel_proj)})")
 
-    jql = " AND ".join(jql_parts) + " ORDER BY created DESC"
+# Rango de fechas
+jql_parts.append(f"created >= '{start}' AND created <= '{end}'")
 
-    with st.spinner("Cargando tickets de Jira…"):
-        issues = fetch_issues(jira, jql)
+# 👇 NO añadimos ni status ni priority aquí
+jql = " AND ".join(jql_parts) + " ORDER BY created DESC"
 
-    if not issues:
+with st.spinner("Cargando tickets de Jira…"):
+    issues = fetch_issues(jira, jql)
+
+
+if not issues:
         st.warning("No hay tickets para los filtros elegidos.")
         st.stop()
 
