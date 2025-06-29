@@ -7,3 +7,4 @@ openai
 torch
 transformers
 accelerate
+setencepiece
